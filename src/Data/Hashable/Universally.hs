@@ -10,15 +10,43 @@ import Data.Primitive (PrimArray,SmallArray)
 import Data.IORef (IORef,writeIORef,readIORef,newIORef)
 import Control.Monad (when)
 import Control.Applicative (liftA2)
+import Data.Bits ((.&.))
 import qualified Data.Primitive as PM
 
 class Hashable a where
   hash :: EntropyMonad m => EntropyType m -> a -> m Word
 
+-- We use the multiply-shift scheme described on the wikipedia page
+-- for universal hashing:
+--
+--   h(x) = a * x mod (2**w)
 instance Hashable Word where
   hash e x = do
     arr <- values 2 True e
-    pure ((PM.indexPrimArray arr 0 * x) + PM.indexPrimArray arr 1)
+    pure ((PM.indexPrimArray arr 0 * makeOdd x) + PM.indexPrimArray arr 1)
+    where
+    makeOdd w = (w .&. (maxBound - 1)) + 1
+
+instance Hashable a => Hashable (Maybe a) where
+  hash e x = case x of
+    Nothing -> do
+      arr <- values 1 False e
+      pure (PM.indexPrimArray arr 0)
+    Just y -> do
+      kids <- children 1 False e
+      hash (PM.indexSmallArray kids 0) y
+
+instance Hashable a => Hashable (SmallArray a) where
+  hash e xs = do
+    let sz = PM.sizeofSmallArray xs
+    vals <- values (sz + 1) False e
+    kids <- children sz False e
+    let go !ix !acc = if ix < sz
+          then do
+            h <- hash (PM.indexSmallArray kids ix) (PM.indexSmallArray xs ix)
+            go (ix + 1) (acc + h)
+          else pure acc
+    go 0 (PM.indexPrimArray vals sz)
 
 instance (Hashable a, Hashable b) => Hashable (a,b) where
   hash e (a,b) = do
